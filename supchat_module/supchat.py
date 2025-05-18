@@ -1,24 +1,62 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Optional
 from datetime import datetime
 from uuid import uuid4
-import random
 import calendar
+import random
+import json
 
 # Хранение состояния
 class DataStorage:
     def __init__(self):
-        self.supports: list[Support] = []
-        self.clients: list[Client] = []
-        self.chats: list[Chat] = []
+        self.supports: list['Support'] = []
+        self.clients: list['Client'] = []
+        self.chats: list['Chat'] = []
 
     def AddChat(self, chat: 'Chat'):
+        """
+        Добавление нового чата
+        """
         self.chats.append(chat)
 
     def AddClient(self, client: 'Client'):
+        """
+        Добавление нового клиента
+        """
         self.clients.append(client)
 
     def AddSupport(self, support: 'Support'):
+        """
+        Добавление нового оператора
+        """
         self.supports.append(support)
+
+    def GetAvailableSupport(self) -> Optional['Support']:
+        """
+        Получение доступного оператора
+        """
+        available = [s for s in self.supports if s.isAvailable]
+        return random.choice(available) if available else None
+
+    def ExportJson(self, filename: str):
+        """
+        Выгрузка в JSON
+        """
+        data = {
+            "supports": [s.ToDict() for s in self.supports],
+            "clients": [c.ToDict() for c in self.clients],
+            "chats": [chat.ToDict() for chat in self.chats]
+        }
+        with open(filename, 'w') as f:
+            json.dump(data, f, default = str, indent = 2)
+        print(json.dumps(data, indent = 2))
+
+    def GetChatsByUser(self, userId: str) -> List['Chat']:
+        """
+        Возвращает чаты ассоциированные с конкретным пользователем (Support || Client)
+        """
+        return [chat for chat in self.chats
+                if chat.clientId == userId or userId is chat.supportIds]
 
 # Базовый класс для сущностей Support и Client
 @dataclass
@@ -27,35 +65,145 @@ class Person:
     city: str
     dob: datetime
     exp: int
-    id: str = None
-    currentChatId: str = None
+    id: str = field(default_factory=lambda: str(uuid4()))
+    currentChat: Optional['Chat'] = None
 
-    def __post_init__(self):
-        if self.id is None:
-            self.id = str(uuid4())
-
-    def SendMessage(self, text):
+    def SendMessage(self, text: str):
+        """
+        Отправка сообщения в чат
+        """
         if self.currentChat is not None:
             newMessage = Message(text, self.id)
+            self.currentChat.AddMessage(newMessage)
+
+    def ToDict(self):
+        """
+        Возвращает словарь из экземпляра объекта
+        """
+        return {
+            "id": self.id,
+            "fullname": self.fullname,
+            "city": self.city,
+            "dob": self.dob.isoformat(),
+            "exp": self.exp,
+            "currentChat": self.currentChat.id if self.currentChat else None
+        }
 
 # Оператор
-# Добавляется должность и доступность
 @dataclass
 class Support(Person):
     post: str = "L1"
     isAvailable: bool = True
 
+    def CloseChat(self):
+        """
+        Закрывает чат, что-то из разряда 'выполнить'
+        """
+        if self.currentChat and not self.currentChat.isActive:
+            raise ValueError("chat already closed")
+
+        self.currentChat.Close()
+        self.isAvailable = True
+        self.currentChat = None
+
+    def ToDict(self):
+        """
+        Возвращает словарь из экземпляра объекта
+        """
+        data = super().ToDict()
+        data.update({
+            "post": self.post,
+            "isAvailable": self.isAvailable
+        })
+        return data
+
 # Клиент с возможностью открыть обращение
+@dataclass
 class Client(Person):
     messageTemplates = ("Hello", "Missing item", "Wrong order delivered",
                         "Where is my order", "Wrong item")
  
-    def InitChat(self, data: DataStorage) -> str:
-        newChat = Chat(clientId = self.id)
-        data.AddChat(newChat)
-        return newChat.id
-    
+    def InitChat(self, data: DataStorage):
+        """
+        Возможность 'открыть' обращение
+        """
+        support = data.GetAvailableSupport()
+        if not support:
+            raise ValueError("no available supports")
 
+        chat = Chat(clientId = self.id)
+        chat.supportIds.append(support.id)
+
+        self.currentChat = chat
+        support.currentChat = chat
+        support.isAvailable = False
+
+        data.AddChat(chat)
+
+        return chat
+    
+    def SetCsat(self, csat: int):
+        """
+        Установка ксата и проверка его на валидность
+        """
+        if self.currentChat and not self.currentChat.isActive:
+            if 1 <= csat <= 5:
+                self.currentChat.csat = csat
+            else:
+                raise ValueError("CSAT must be 1-5")
+
+@dataclass    
+class Message:
+    text: str
+    senderId:str
+    sendTime: datetime = field(default_factory=datetime.now)
+
+    def ToDict(self):
+        """
+        Возвращает словарь из экземпляра объекта
+        """
+        return {
+            "text": self.text,
+            "senderId": self.senderId,
+            "sendTime": self.sendTime.isoformat()
+        }
+
+@dataclass      
+class Chat:
+    clientId: str
+    id: str = field(default_factory=lambda: str(uuid4()))
+    initTime: datetime = field(default_factory=datetime.now)
+    supportIds: List[str] = field(default_factory=list)
+    isActive: bool = True
+    csat: Optional[int] = None
+    messages: List[Message] = field(default_factory=list)
+
+    def AddMessage(self, message: 'Message'):
+        """
+        Добавляет сообщение в чат
+        """
+        self.messages.append(message)
+
+    def Close(self):
+        """
+        Закрывает чат
+        """
+        self.isActive = False
+
+    def ToDict(self):
+        """
+        Возвращает словарь из экземпляра объекта
+        """
+        return {
+            "id": self.id,
+            "clientId": self.clientId,
+            "supportIds": self.supportIds,
+            "initTime": self.initTime.isoformat(),
+            "isActive": self.isActive,
+            "csat": self.csat,
+            "messages": [m.ToDict() for m in self.messages]
+        }
+    
 # Решил использовать строителя для генерации сущностей
 # Заполняет объект псевдослучайными значениями
 class PersonBuilder:
@@ -71,29 +219,24 @@ class PersonBuilder:
                 "Lenin", "Ritchie", "Kochin", "Tokarev")
 
     def __init__(self):
-        self.person = Person(
-            fullname = None,
-            city = None,
-            dob = None,
-            exp = None
-        )
+        self.person = {}
 
-    def GenerateFullname(self):
+    def _GenerateFullname(self):
         """
         Генерация 'случайных' имён
         """
         name = random.choice(self.NAMES)
         patron = random.choice(self.PATRONS)
         surname = random.choice(self.SURNAMES)
-        self.person.fullname = f"{surname} {name} {patron}"
+        self.person['fullname'] = f"{surname} {name} {patron}"
   
-    def GenerateCity(self):
+    def _GenerateCity(self):
         """
         Выбор города из объявленного ранее кортежа
         """
-        self.person.city = random.choice(self.CITIES)
+        self.person['city'] = random.choice(self.CITIES)
 
-    def GenerateDob(self):
+    def _GenerateDob(self):
         """
         Генерация даты рождения с учётом високосных
         """
@@ -103,92 +246,87 @@ class PersonBuilder:
         maxDays = calendar.monthrange(year, month)[1] # 0 - день недели, 1 - количество дней в месяце
         day = random.randint(1, maxDays)
         dob = datetime(year, month, day)
-        self.person.dob = dob
+        self.person['dob'] = dob
 
-    def _generateCommon(self):
+    def _GenerateExp(self):
         """
-        Выполняет общую инициализацию
+        Генерирует стаж для Support и время с момента регистрации для Client.
+        Значение в месяцах
         """
-        self.GenerateFullname()
-        self.GenerateCity()
-        self.GenerateDob()
+        self.person['exp'] = random.randint(1, 120)
 
-# Сущность оператора
 class SupportBuilder(PersonBuilder):
-    POSTS = ["L1", "L2", "L3", "TL", "QA"]
+    POSTS = ("L1", "L2", "L3", "TL", "QA")
 
     def Build(self) -> Support:
         """
-        Собирает и возвращает готовый объект класса
+        Собирает и возвращает готовый объект класса Support
         """
-        self.person = Support(
-            fullname = None,
-            city = None,
-            dob = None,
-            exp = random.randint(1, 120), # Опыт сотрудника в месяцах
-            post = random.choice(self.POSTS),
-            isAvailable = True
+        self._GenerateFullname()
+        self._GenerateCity()
+        self._GenerateDob()
+        self._GenerateExp()
+        return Support(
+            fullname = self.person['fullname'],
+            city = self.person['city'],
+            dob = self.person['dob'],
+            exp = self.person['exp'],
+            post = random.choice(self.POSTS)
         )
-        self._generateCommon()
-        return self.person
 
 class ClientBuilder(PersonBuilder):
-    """
-    Собирает и возвращает готовый объект класса
-    """
     def Build(self) -> Client:
-        self.person = Client(
-        fullname = None,
-        city = None,
-        dob = None,
-        exp = random.randint(1, 120) # Дата с момента регистрации клиента тоже в месяцах
+        """
+        Собирает и возвращает готовый объект класса Client
+        """
+        self._GenerateFullname()
+        self._GenerateCity()
+        self._GenerateDob()
+        self._GenerateExp()
+        return Client(
+            fullname = self.person['fullname'],
+            city = self.person['city'],
+            dob = self.person['dob'],
+            exp = self.person['exp']
         )
-        self._generateCommon()
-        return self.person
-
-class Message:
-    def __init__(self, text, id):
-        self.text = text
-        self.sendTime = datetime.now()
-        self.senderId = id
-
-@dataclass
-class Chat:
-    id: str = str(uuid4())
-    clientId: str = None
-    initTime: datetime = datetime.now()
-    supportsIds: list[str] = None
-    isActive: bool = True
-    csat: int = None
-    messages: list[Message] = None
-
-    def __post_init__(self):
-        if self.supportsIds is None:
-            self.supportsIds = []
-        if self.csat and not (1 <= self.csat <= 5):
-            raise ValueError("invalid csat value")
 
 class Platform:
-    data = DataStorage()
-
     def __init__(self, clientsCount, supportsCount):
-        spBuilder = SupportBuilder()
-        clBuilder = ClientBuilder()
+        self.data = DataStorage()
+        self._GenerateUsers(clientsCount, supportsCount)
 
-        for i in range(1, supportsCount):
-            newSupport = spBuilder.Build()
-            self.data.AddSupport(newSupport)
+    def _GenerateUsers(self, clientsCount: int, supportsCount: int):
+        """
+        Создаёт клиентов и операторов в необходимом диапазоне
+        """
+        for _ in range(clientsCount):
+            self.data.AddClient(ClientBuilder().Build())
 
-        for i in range(1, clientsCount):
-            newClient = clBuilder.Build()
-            self.data.AddClient(newClient)
+        for _ in range(supportsCount):
+            self.data.AddSupport(SupportBuilder().Build())
 
-    def startChats(self, chatCount):
-        if chatCount >= len(self.data.clients):
-            raise ValueError('chats count cant be more than clients count')
-        for i in self.data.clients:
-            i.currentChatId = i.InitChat()
-            message = random.choice(i.messageTemplates)
-            i.SendMessage(message)
+    def StartChats(self, chatCount):
+        """
+        Инициализирует начальные обращения
+        """
+        clients = random.sample(self.data.clients, chatCount)
+        for client in clients:
+            try:
+                chat = client.InitChat(self.data)
+                client.SendMessage(random.choice(client.messageTemplates))
+            except ValueError as e:
+                print(f"error starting chat: {e}")
 
-platform = Platform(20, 10)
+    def Start(self):
+        """
+        Запускает симуляцию платформы
+        """
+        for chat in self.data.chats:
+            if chat.isActive and random.random() < 0.3:
+                support = next(s for s in self.data.supports 
+                               if s.id in chat.supportIds)
+                support.CloseChat()
+                if random.random() < 0.7:
+                    client = next(c for c in self.data.clients
+                                  if c.id == chat.clientId)
+                    client.SetCsat(random.randint(1, 5))
